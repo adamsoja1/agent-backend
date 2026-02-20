@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  bot:
+    build: .
+    image: discord-ai-app:latest
+    container_name: discord-ai-app
+    env_file:
+      - .env
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - LLM_PROVIDER=ollama
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY}
+      - LLM_MODEL=kimi-k2.5
+      - LLM_TEMPERATURE=0.1
+
+    restart: unless-stopped
