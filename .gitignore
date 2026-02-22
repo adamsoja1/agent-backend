@@ -2,3 +2,12 @@
 .env.local
 *ipynb*
 _pycache_/
+*.pyc
+__pycache__/
+*pyc
+*.pyc
+.env*
+.env.local
+*.ipynb
+__pycache__/
+*.pyc

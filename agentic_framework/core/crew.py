@@ -27,10 +27,11 @@ class Crew:
     def __post_init__(self):
         if self.entrypoint_agent not in self.agents:
             raise ValueError("Entrypoint agent must be part of the agents list.")
-        if self.shared_knowledge:
+        # Don't blindly share the same Conversation object when delegating
+        # as pending tool calls will bleed into the delegate agent's context
+        if self.shared_knowledge and self.only_ask_for_info:
             for agent in self.agents:
                 agent.conversation = self.conversation
-
         for agent in self.agents:
             agent.crew = self
 

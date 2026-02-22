@@ -101,7 +101,7 @@ class Agent:
             msgs.append({"role": "system", "content": self.conversation.system_prompt})
 
         if self.crew and self.can_delegate and not self.crew.only_ask_for_info:
-            agent_list = ", ".join(a.name for a in self.crew.agents if a != self.name)
+            agent_list = ", ".join(a.name for a in self.crew.agents if a.name != self.name)
             crew_hint = (
                 f"\nYou are part of a crew. "
                 f"Other available agents: [{agent_list}]. "
@@ -112,7 +112,7 @@ class Agent:
             else:
                 msgs.append({"role": "system", "content": crew_hint.strip()})
         if self.crew and self.crew.only_ask_for_info:
-            agent_list = ", ".join(a.name for a in self.crew.agents if a != self.name)
+            agent_list = ", ".join(a.name for a in self.crew.agents if a.name != self.name)
             info_hint = (
                 f"\nYou can ask other specialists for help. "
                 f"Other available agents: [{agent_list}]. "
@@ -152,12 +152,25 @@ class Agent:
             return
 
         target = next((a for a in self.crew.agents if a.name == target_name), None)
-        result = await target.invoke(question) if target else f"Error: Unknown agent '{target_name}'"
         if target is None:
             yield ErrorEvent(agent_name=self.name, error=f"Unknown agent '{target_name}' in crew.")
             return
 
-        yield AskAgentEventResult(agent_name=self.name, target_agent=target_name, question=question, result=result)
+        original_conversation = target.conversation
+        target.conversation = Conversation(id='temp_for_ask_agent')
+        target.conversation.system_prompt = original_conversation.system_prompt
+
+        try:
+            result = await target.invoke(question)
+        finally:
+            target.conversation = original_conversation
+
+        yield AskAgentEventResult(
+            agent_name=self.name,
+            target_agent=target_name,
+            question=question,
+            result=result,
+        )
 
     async def stream(self, user_message: str) -> AsyncGenerator[StreamEvent, None]:
         if self.client is None:
@@ -227,7 +240,7 @@ class Agent:
 
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
-                "content": assistant_text or None,
+                "content": assistant_text or '',
                 "tool_calls": [
                     {
                         "id": acc["id"],
@@ -263,8 +276,8 @@ class Agent:
                         yield event
                     tool_result = delegation_result or f"Delegation to {target_name} completed."
                     is_error = False
-                    
-                if tool_name.startswith("ask_agent_"):
+
+                elif tool_name.startswith("ask_agent_"):
                     target_name = tool_name.replace("ask_agent_", "")
                     question = arguments.get("question", "")
                     ask_result = ""
