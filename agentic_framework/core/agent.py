@@ -37,24 +37,26 @@ class Agent:
     name: str
     model: str
     description: str = ""
+    system_prompt: str = ""
+    can_delegate: bool = True
     tools: list[BaseTool] = field(default_factory=list)
     conversation: Conversation = field(default_factory=Conversation)
     max_iterations: int = 7
     client: Any = field(default_factory=lambda: _default_client)
     tool_auto_choice: bool = False
-    # Set by Crew at registration time – agents should not set this directly
     crew: Crew | None = field(default=None, repr=False, compare=False)
-    output_format: Any = None  # Optional schema or example for formatting the final answer
+    output_format: Any = None  
 
 
     def __post_init__(self):
         if isinstance(self.tools, list):
             self.tools = {tool.name: tool for tool in self.tools}
+        self.conversation.system_prompt = self.system_prompt
 
     def add_tool(self, tool: BaseTool|Agent):
         if isinstance(tool, Agent):
             tool = BaseTool(
-                name=tool.name,
+                name=f"delegate_to_agent_{tool.name}",
                 description=tool.description,
                 func=lambda task, target_agent=tool.name: self._delegate(target_agent, task),
             )
@@ -83,8 +85,6 @@ class Agent:
 
     def _build_openai_tools(self) -> list[dict[str, Any]]:
         schemas = [t.to_openai_schema() for t in self.tools.values()]
-        if self.crew:
-            schemas.append(self._delegation_tool_schema())
         return schemas
 
     @staticmethod
@@ -118,12 +118,12 @@ class Agent:
         msgs: list[dict[str, Any]] = []
         if self.conversation.system_prompt:
             msgs.append({"role": "system", "content": self.conversation.system_prompt})
-        if self.crew:
-            agent_list = ", ".join(a for a in self.crew.agents if a != self.name)
+        if self.crew and self.can_delegate:
+            agent_list = ", ".join(a.name for a in self.crew.agents if a != self.name)
             crew_hint = (
                 f"\nYou are part of a crew. "
                 f"Other available agents: [{agent_list}]. "
-                "Use `delegate_to_agent` when a task falls outside your expertise."
+                "Use `delegate_to_agent_<agent_name>` when a task falls outside your expertise."
             )
             if msgs:
                 msgs[0]["content"] += crew_hint
@@ -144,10 +144,12 @@ class Agent:
         if self.crew is None:
             yield ErrorEvent(agent_name=self.name, error="Agent is not part of a crew; cannot delegate.")
             return
-        target = self.crew.agents.get(target_name)
+
+        target = next((a for a in self.crew.agents if a.name == target_name), None)
         if target is None:
             yield ErrorEvent(agent_name=self.name, error=f"Unknown agent '{target_name}' in crew.")
             return
+
         yield DelegationEvent(agent_name=self.name, target_agent=target_name, task=task)
 
 
@@ -247,14 +249,12 @@ class Agent:
                     arguments_raw=acc["arguments"],
                 )
 
-                if tool_name == "delegate_to_agent":
-                    target_name = arguments.get("agent_name", "")
+                if tool_name.startswith("delegate_to_agent_"):
+                    target_name = tool_name.replace("delegate_to_agent_", "")
                     task = arguments.get("task", "")
                     delegation_result = ""
                     async for event in self._delegate(target_name, task):
                         yield event
-                        if isinstance(event, FinalAnswerEvent):
-                            delegation_result = event.answer
                     tool_result = delegation_result or f"Delegation to {target_name} completed."
                     is_error = False
                 else:

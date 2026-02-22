@@ -5,7 +5,7 @@ from dataclasses import dataclass
 @dataclass
 class Conversation:
     id: str
-    system_prompt: str
+    system_prompt: str = ''
     messages: list[dict[str, str]] = None
     summarized_history: str = "" #to be added later on
     

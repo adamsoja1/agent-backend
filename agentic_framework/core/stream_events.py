@@ -36,6 +36,12 @@ class DelegationEvent(StreamEvent):
     target_agent: str
     task: str
 
+@dataclass
+class AskAgentEvent(StreamEvent):
+    """This agent is asking another agent for information."""
+    target_agent: str
+    question: str
+
 
 @dataclass
 class FinalAnswerEvent(StreamEvent):
