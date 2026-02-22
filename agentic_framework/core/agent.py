@@ -36,6 +36,7 @@ _default_client = AsyncOpenAI(
 class Agent:
     name: str
     model: str
+    description: str = ""
     tools: list[BaseTool] = field(default_factory=list)
     conversation: Conversation = field(default_factory=Conversation)
     max_iterations: int = 7
@@ -43,11 +44,22 @@ class Agent:
     tool_auto_choice: bool = False
     # Set by Crew at registration time – agents should not set this directly
     crew: Crew | None = field(default=None, repr=False, compare=False)
+    output_format: Any = None  # Optional schema or example for formatting the final answer
 
 
     def __post_init__(self):
         if isinstance(self.tools, list):
             self.tools = {tool.name: tool for tool in self.tools}
+
+    def add_tool(self, tool: BaseTool|Agent):
+        if isinstance(tool, Agent):
+            tool = BaseTool(
+                name=tool.name,
+                description=tool.description,
+                func=lambda task, target_agent=tool.name: self._delegate(target_agent, task),
+            )
+            
+        self.tools[tool.name] = tool
 
     def remove_tool(self, name: str) -> bool:
         if name in self.tools:
