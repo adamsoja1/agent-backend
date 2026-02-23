@@ -246,7 +246,7 @@ class Agent:
                             acc["id"] = tc.id
                         if tc.function:
                             if tc.function.name:
-                                acc["name"] += tc.function.name
+                                acc["name"] = tc.function.name
                             if tc.function.arguments:
                                 acc["arguments"] += tc.function.arguments
 
