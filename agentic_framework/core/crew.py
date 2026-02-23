@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
-from .agent import Agent
-from .conversation import Conversation
-from ..core.stream_events import (
+from agentic_framework.core.agent import Agent
+from agentic_framework.core.conversation import Conversation
+from agentic_framework.core.stream_events import (
     DelegationEvent,
     ErrorEvent,
     FinalAnswerEvent,

@@ -9,9 +9,9 @@ from typing import Any, AsyncGenerator, TYPE_CHECKING
 
 from openai import AsyncOpenAI
 
-from .conversation import Conversation
-from ..tools.base import BaseTool
-from ..core.stream_events import (
+from agentic_framework.core.conversation import Conversation
+from agentic_framework.tools.base import BaseTool
+from agentic_framework.core.stream_events import (
     AskAgentEventResult,
     DelegationEvent,
     ErrorEvent,
