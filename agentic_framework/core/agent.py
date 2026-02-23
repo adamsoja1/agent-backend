@@ -275,16 +275,16 @@ class Agent:
                 tool_name = acc["name"]
                 try:
                     arguments = json.loads(acc["arguments"] or "{}")
-                except json.JSONDecodeError as exc:
-                    error_msg = f"Failed to parse arguments for tool '{tool_name}': {exc}. Please provide valid JSON arguments."
-                    logger.warning(error_msg)
-                    yield ErrorEvent(agent_name=self.name, error=error_msg)
-                    # Add error as tool result so LLM can retry
+                except Exception as exc:
+                    error_msg = (
+                        f"Failed to parse arguments for tool '{tool_name}': {exc}. "
+                        "Please retry the call with valid JSON arguments."
+                    )
+                    logger.warning("Agent '%s' bad tool arguments for '%s': %s", self.name, tool_name, exc)
                     self.conversation.messages.append(
                         {"role": "tool", "tool_call_id": call_id, "content": f"Error: {error_msg}"}
                     )
-                    continue
-
+                    continue  
                 yield ToolCallStartEvent(
                     agent_name=self.name,
                     call_id=call_id,
