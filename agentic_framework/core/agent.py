@@ -187,7 +187,7 @@ class Agent:
             self.system_prompt += "\n" + limit_warning
 
     @staticmethod
-    def _parse_tool_arguments(raw: str) -> dict[str, Any]:
+    def _parse_tool_arguments(raw: str) -> tuple[dict[str, Any], str]:
         """
         Parse tool call arguments from a raw JSON string produced by the LLM.
 
@@ -197,11 +197,16 @@ class Agent:
         the first complete value ended, so we can truncate and retry before
         giving up.
 
+        Returns a tuple of (parsed_dict, clean_json_string) where the clean
+        string is safe to store back into conversation history for the next
+        API call.
+
         Raises json.JSONDecodeError if the string cannot be recovered.
         """
         raw = raw.strip() if raw else "{}"
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
+            return parsed, raw
         except json.JSONDecodeError as exc:
             # "Extra data" means a valid JSON value was followed by junk.
             # Truncate at exc.pos and retry once.
@@ -214,7 +219,10 @@ class Agent:
                     len(raw),
                     truncated,
                 )
-                return json.loads(truncated)  # may raise again — caller handles it
+                parsed = json.loads(truncated)  # may raise again — caller handles it
+                # Re-serialize to guarantee the stored string is clean
+                clean = json.dumps(parsed)
+                return parsed, clean
             raise
 
     async def stream(self, user_message: str) -> AsyncGenerator[StreamEvent, None]:
@@ -251,8 +259,11 @@ class Agent:
             try:
                 response_stream = await self.client.chat.completions.create(**stream_kwargs)
             except Exception as exc:
+                logger.error("Agent '%s' API error on iteration %d: %s", self.name, iteration, exc)
                 yield ErrorEvent(agent_name=self.name, error=str(exc))
-                return
+                # Don't hard-return — fall through so FinalAnswerEvent is always emitted.
+                # If this was the last iteration the outer loop will surface assistant_text.
+                break
 
             assistant_text = ""
             tool_calls_acc: dict[int, dict[str, Any]] = {}
@@ -285,7 +296,7 @@ class Agent:
                             if tc.function.arguments:
                                 acc["arguments"] += tc.function.arguments
 
-                if choice.finish_reason == "stop":
+                if choice.finish_reason in ("stop", "tool_calls"):
                     break
 
             # No tool calls — the LLM gave a final text answer
@@ -295,55 +306,69 @@ class Agent:
                 found_answer = True
                 break
 
-            # Build the assistant message with tool_calls so conversation history is valid
+            # Parse and normalize arguments for all accumulated tool calls.
+            # We do this before building the assistant message so the stored
+            # `arguments` string is always valid JSON (guards against 400s on
+            # the next API call caused by malformed raw strings from the LLM).
+            parsed_tool_calls: list[tuple[dict[str, Any], str, str, str]] = []  # (arguments, clean_args, call_id, tool_name)
+            parse_error: str | None = None
+            parse_error_index: int = 0
+
+            for i, acc in enumerate(tool_calls_acc.values()):
+                try:
+                    parsed_args, clean_args = self._parse_tool_arguments(acc["arguments"])
+                    parsed_tool_calls.append((parsed_args, clean_args, acc["id"], acc["name"]))
+                except json.JSONDecodeError as exc:
+                    parse_error = (
+                        f"Failed to parse arguments for tool '{acc['name']}': {exc}. "
+                        "Please retry the call with valid JSON arguments."
+                    )
+                    logger.warning(
+                        "Agent '%s' bad tool arguments for '%s': %s", self.name, acc["name"], exc
+                    )
+                    parse_error_index = i
+                    # Fill remaining with empty so we still have the right count
+                    for remaining_acc in list(tool_calls_acc.values())[i:]:
+                        parsed_tool_calls.append(({}, "{}", remaining_acc["id"], remaining_acc["name"]))
+                    break
+
+            # Build the assistant message using CLEAN (normalized) argument strings
+            # so the conversation history is always valid for the next API call.
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
                 "content": assistant_text or "",
                 "tool_calls": [
                     {
-                        "id": acc["id"],
+                        "id": call_id,
                         "type": "function",
-                        "function": {"name": acc["name"], "arguments": acc["arguments"]},
+                        "function": {"name": tool_name, "arguments": clean_args},
                     }
-                    for acc in tool_calls_acc.values()
+                    for _, clean_args, call_id, tool_name in parsed_tool_calls
                 ],
             }
             self.conversation.messages.append(assistant_msg)
 
-            for i, acc in enumerate(tool_calls_acc.values()):
-                call_id = acc["id"]
-                tool_name = acc["name"]
+            if parse_error is not None:
+                # Append error result for the failed tool call
+                failed_call_id = parsed_tool_calls[parse_error_index][2]
+                self.conversation.messages.append(
+                    {"role": "tool", "tool_call_id": failed_call_id, "content": f"Error: {parse_error}"}
+                )
+                # Append placeholder results for all remaining tool calls
+                for _, _, remaining_call_id, _ in parsed_tool_calls[parse_error_index + 1:]:
+                    self.conversation.messages.append({
+                        "role": "tool",
+                        "tool_call_id": remaining_call_id,
+                        "content": "Skipped due to earlier parse error in this batch."
+                    })
+                continue  # retry the iteration loop rather than break — gives LLM a chance to recover
 
-                try:
-                    arguments = self._parse_tool_arguments(acc["arguments"])
-                except json.JSONDecodeError as exc:
-                    error_msg = (
-                        f"Failed to parse arguments for tool '{tool_name}': {exc}. "
-                        "Please retry the call with valid JSON arguments."
-                    )
-                    logger.warning(
-                        "Agent '%s' bad tool arguments for '%s': %s", self.name, tool_name, exc
-                    )
-                    # Append error for this tool call
-                    self.conversation.messages.append(
-                        {"role": "tool", "tool_call_id": call_id, "content": f"Error: {error_msg}"}
-                    )
-                    # Append placeholder results for all remaining tool calls so the API
-                    # sees a complete set of tool results and doesn't return 400
-                    remaining = list(tool_calls_acc.values())[i + 1:]
-                    for remaining_acc in remaining:
-                        self.conversation.messages.append({
-                            "role": "tool",
-                            "tool_call_id": remaining_acc["id"],
-                            "content": "Skipped due to earlier parse error in this batch."
-                        })
-                    break
-
+            for arguments, clean_args, call_id, tool_name in parsed_tool_calls:
                 yield ToolCallStartEvent(
                     agent_name=self.name,
                     call_id=call_id,
                     tool_name=tool_name,
-                    arguments_raw=acc["arguments"],
+                    arguments_raw=clean_args,
                 )
 
                 if tool_name.startswith("delegate_to_agent_"):
