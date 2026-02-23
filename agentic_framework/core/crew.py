@@ -79,3 +79,10 @@ class Crew:
                 
             if not self.delegate_to_agent:
                 break
+    
+    async def get_response(self, input_message: str) -> str:
+        final_answer = ""
+        async for event in self.invoke(input_message):
+            if isinstance(event, FinalAnswerEvent):
+                final_answer = event.answer
+        return final_answer
