@@ -176,7 +176,7 @@ class Agent:
         )
 
     def max_iterations_reached(self, iteration_count: int) -> bool:
-        return iteration_count >= self.max_iterations
+        return iteration_count >= self.max_iterations - 1
 
     def modify_prompt_on_max_iterations(self):
         limit_warning = """
