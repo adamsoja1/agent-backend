@@ -296,7 +296,7 @@ class Agent:
                     self.conversation.messages.append(
                         {"role": "tool", "tool_call_id": call_id, "content": f"Error: {error_msg}"}
                     )
-                    continue
+                    break
 
                 yield ToolCallStartEvent(
                     agent_name=self.name,
