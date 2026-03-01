@@ -10,7 +10,7 @@ from typing import Any, AsyncGenerator, TYPE_CHECKING
 from openai import AsyncOpenAI
 
 from agentic_framework.core.conversation import Conversation
-from agentic_framework.tools.base import BaseTool
+from agentic_framework.tools.base import BaseTool, Skill
 from agentic_framework.core.stream_events import (
     AskAgentEventResult,
     DelegationEvent,
@@ -32,6 +32,14 @@ _default_client = AsyncOpenAI(
     api_key=os.getenv("OLLAMA_API_KEY", "ollama"),
 )
 
+_DEACTIVATE_TOOL = BaseTool(
+    name="deactivate_skill",
+    description=(
+        "Deactivate the current skill and return to the base toolset. "
+        "Call this when you are done using the current skill's tools."
+    ),
+)
+
 
 @dataclass
 class Agent:
@@ -41,6 +49,7 @@ class Agent:
     system_prompt: str = ""
     can_delegate: bool = True
     tools: list[BaseTool] = field(default_factory=list)
+    skills: list[Skill] = field(default_factory=list)
     conversation: Conversation = field(default_factory=Conversation)
     max_iterations: int = 7
     client: Any = field(default_factory=lambda: _default_client)
@@ -52,8 +61,48 @@ class Agent:
         if isinstance(self.tools, list):
             self.tools = {tool.name: tool for tool in self.tools}
 
-    def __prepare_system_prompt(self):
-        self.conversation.system_prompt = self.system_prompt
+        if self.skills:
+            skills_list = "\n".join(f"- {skill.name}: {skill.description}" for skill in self.skills)
+            self._skill_prompt = (
+                f"\n\nYou have the following skills available. "
+                f"Activate a skill when the task matches its domain — this will unlock its specific tools. "
+                f"You should first call skill_<skill_name> to activate a skill, then use its tools as needed. "
+                f"Call `deactivate_skill` when you are done with the skill's tools to return to the base toolset. "
+                f"You can switch directly between skills without calling `deactivate_skill` first.\n\n"
+                f"Available skills:\n{skills_list}"
+                f"You can activate only one skill at a time, and activating a new skill will deactivate the previous one."
+            )
+            for skill in self.skills:
+                self.tools[skill.name] = skill
+
+        # Snapshot of the base toolset — used to restore after skill deactivation
+        self._base_tools: dict[str, BaseTool] = dict(self.tools)
+        self._active_skill: Skill | None = None
+
+
+    def _activate_skill(self, skill: Skill) -> str:
+        self.tools = dict(self._base_tools)
+        self.tools = {}
+        self.tools.update({t.name: t for t in skill.tools})
+        self.tools[_DEACTIVATE_TOOL.name] = _DEACTIVATE_TOOL
+        self._active_skill = skill
+
+        self._active_skill_prompt = (
+            f"\n\n[Curerntly Active skill: {skill.name}]\n"
+            f"Call `deactivate_skill` when you are done."
+        )
+
+        return f"Skill '{skill.name}' activated."
+
+    def _deactivate_skill(self) -> str:
+        if self._active_skill is None:
+            return "No skill is currently active."
+        skill_name = self._active_skill.name
+        self.tools = dict(self._base_tools)
+        self._active_skill = None
+        self._active_skill_prompt = ""
+        return f"Skill '{skill_name}' deactivated."
+
 
     def add_tool(self, tool: BaseTool | Agent):
         if isinstance(tool, Agent):
@@ -71,8 +120,11 @@ class Agent:
                 )
 
         self.tools[tool.name] = tool
+        # Keep base snapshot in sync when tools are added externally
+        self._base_tools[tool.name] = tool
 
     def remove_tool(self, name: str) -> bool:
+        self._base_tools.pop(name, None)
         if name in self.tools:
             del self.tools[name]
             return True
@@ -97,36 +149,35 @@ class Agent:
         return schemas
 
     def _system_messages(self) -> list[dict[str, Any]]:
-        self.__prepare_system_prompt()
-        msgs: list[dict[str, Any]] = []
-        if self.conversation.system_prompt:
-            msgs.append({"role": "system", "content": self.conversation.system_prompt})
+        parts = [self.system_prompt]
 
-        if self.crew and self.can_delegate and not self.crew.only_ask_for_info:
+        if self.skills:
+            parts.append(self._skill_prompt)
+
+        if self._active_skill:
+            parts.append(self._active_skill_prompt)
+
+
+        if self.crew:
             agent_list = ", ".join(a.name for a in self.crew.agents if a.name != self.name)
-            crew_hint = (
-                f"\nYou are part of a crew. "
-                f"Other available agents: [{agent_list}]. "
-                "Use `delegate_to_agent_<agent_name>` when a task falls outside your expertise."
-            )
-            if msgs:
-                msgs[0]["content"] += crew_hint
-            else:
-                msgs.append({"role": "system", "content": crew_hint.strip()})
+            if self.can_delegate and not self.crew.only_ask_for_info:
+                parts.append(
+                    f"\nYou are part of a crew. "
+                    f"Other available agents: [{agent_list}]. "
+                    "Use `delegate_to_agent_<agent_name>` when a task falls outside your expertise."
+                )
+            elif self.crew.only_ask_for_info:
+                parts.append(
+                    f"\nYou can ask other specialists for help. "
+                    f"Other available agents: [{agent_list}]. "
+                    "Ask them for information when needed, using the `ask_agent_<agent_name>` tool."
+                )
 
-        if self.crew and self.crew.only_ask_for_info:
-            agent_list = ", ".join(a.name for a in self.crew.agents if a.name != self.name)
-            info_hint = (
-                f"\nYou can ask other specialists for help. "
-                f"Other available agents: [{agent_list}]. "
-                "Ask them for information when needed, using the `ask_agent_<agent_name>` tool."
-            )
-            if msgs:
-                msgs[0]["content"] += info_hint
-            else:
-                msgs.append({"role": "system", "content": info_hint.strip()})
+        system_prompt = "".join(parts)
+        self.conversation.system_prompt = system_prompt
 
-        return msgs
+        return [{"role": "system", "content": system_prompt}] if system_prompt else []
+
 
     async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         tool = self.tools.get(tool_name)
@@ -141,19 +192,16 @@ class Agent:
         if self.crew is None:
             yield ErrorEvent(agent_name=self.name, error="Agent is not part of a crew; cannot delegate.")
             return
-
         target = next((a for a in self.crew.agents if a.name == target_name), None)
         if target is None:
             yield ErrorEvent(agent_name=self.name, error=f"Unknown agent '{target_name}' in crew.")
             return
-
         yield DelegationEvent(agent_name=self.name, target_agent=target_name, task=task)
 
     async def _ask_agent(self, target_name: str, question: str) -> AsyncGenerator[StreamEvent, None]:
         if self.crew is None:
             yield ErrorEvent(agent_name=self.name, error="Agent is not part of a crew; cannot ask other agents.")
             return
-
         target = next((a for a in self.crew.agents if a.name == target_name), None)
         if target is None:
             yield ErrorEvent(agent_name=self.name, error=f"Unknown agent '{target_name}' in crew.")
@@ -162,7 +210,6 @@ class Agent:
         original_conversation = target.conversation
         target.conversation = Conversation(id="temp_for_ask_agent")
         target.conversation.system_prompt = original_conversation.system_prompt
-
         try:
             result = await target.invoke(question)
         finally:
@@ -175,55 +222,36 @@ class Agent:
             result=result,
         )
 
+
     def max_iterations_reached(self, iteration_count: int) -> bool:
         return iteration_count >= self.max_iterations - 1
 
     def modify_prompt_on_max_iterations(self):
-        limit_warning = """
-        You have reached the maximum number of iterations allowed for this task.
-        If you are unable to solve the problem within this limit, provide the best possible answer based on the information you have and explain that you have reached the iteration limit.
-        """
-        if self.system_prompt:
-            self.system_prompt += "\n" + limit_warning
+        limit_warning = (
+            "\nYou have reached the maximum number of iterations allowed for this task. "
+            "Provide the best possible answer based on the information you have and explain "
+            "that you have reached the iteration limit."
+        )
+        self.system_prompt += limit_warning
 
     @staticmethod
     def _parse_tool_arguments(raw: str) -> tuple[dict[str, Any], str]:
-        """
-        Parse tool call arguments from a raw JSON string produced by the LLM.
-
-        Local/smaller models (e.g. Ollama) sometimes emit extra content after
-        a valid JSON object — e.g. two concatenated objects, or a trailing
-        comment.  The json.JSONDecodeError.pos attribute tells us exactly where
-        the first complete value ended, so we can truncate and retry before
-        giving up.
-
-        Returns a tuple of (parsed_dict, clean_json_string) where the clean
-        string is safe to store back into conversation history for the next
-        API call.
-
-        Raises json.JSONDecodeError if the string cannot be recovered.
-        """
         raw = raw.strip() if raw else "{}"
         try:
             parsed = json.loads(raw)
             return parsed, raw
         except json.JSONDecodeError as exc:
-            # "Extra data" means a valid JSON value was followed by junk.
-            # Truncate at exc.pos and retry once.
             if "Extra data" in str(exc) and exc.pos > 0:
                 truncated = raw[: exc.pos]
                 logger.warning(
-                    "Truncating malformed tool arguments at pos %d (original length %d). "
-                    "Truncated: %r",
-                    exc.pos,
-                    len(raw),
-                    truncated,
+                    "Truncating malformed tool arguments at pos %d (original length %d). Truncated: %r",
+                    exc.pos, len(raw), truncated,
                 )
-                parsed = json.loads(truncated)  # may raise again — caller handles it
-                # Re-serialize to guarantee the stored string is clean
+                parsed = json.loads(truncated)
                 clean = json.dumps(parsed)
                 return parsed, clean
             raise
+
 
     async def stream(self, user_message: str) -> AsyncGenerator[StreamEvent, None]:
         if self.client is None:
@@ -232,26 +260,23 @@ class Agent:
 
         self.conversation.add_message("user", user_message)
 
-        openai_tools = self._build_openai_tools()
-        tool_choice: Any = "auto" if openai_tools else "none"
-
         final_answer = ""
         found_answer = False
         assistant_text = ""
 
         for iteration in range(self.max_iterations):
+            openai_tools = self._build_openai_tools()
+            tool_choice: Any = "auto" if openai_tools else "none"
+
             if self.max_iterations_reached(iteration):
                 self.modify_prompt_on_max_iterations()
-                openai_tools = []  # Disable tools after reaching iteration limit
+                openai_tools = []
                 tool_choice = "none"
 
             messages = self._system_messages() + self.conversation.get_messages()
+            
 
-            stream_kwargs: dict[str, Any] = dict(
-                model=self.model,
-                messages=messages,
-                stream=True,
-            )
+            stream_kwargs: dict[str, Any] = dict(model=self.model, messages=messages, stream=True)
             if openai_tools:
                 stream_kwargs["tools"] = openai_tools
                 stream_kwargs["tool_choice"] = tool_choice
@@ -261,8 +286,6 @@ class Agent:
             except Exception as exc:
                 logger.error("Agent '%s' API error on iteration %d: %s", self.name, iteration, exc)
                 yield ErrorEvent(agent_name=self.name, error=str(exc))
-                # Don't hard-return — fall through so FinalAnswerEvent is always emitted.
-                # If this was the last iteration the outer loop will surface assistant_text.
                 break
 
             assistant_text = ""
@@ -288,29 +311,22 @@ class Agent:
                         if tc.id:
                             acc["id"] = tc.id
                         if tc.function:
-                            if tc.function.name:
-                                # Only set name if not yet set — name arrives once per tool call index;
-                                # never append — two tools called in parallel have different indices.
-                                if not acc["name"]:
-                                    acc["name"] = tc.function.name
+                            if tc.function.name and not acc["name"]:
+                                acc["name"] = tc.function.name
                             if tc.function.arguments:
                                 acc["arguments"] += tc.function.arguments
 
                 if choice.finish_reason in ("stop", "tool_calls"):
                     break
 
-            # No tool calls — the LLM gave a final text answer
             if not tool_calls_acc:
                 self.conversation.add_message("assistant", assistant_text)
                 final_answer = assistant_text
                 found_answer = True
                 break
 
-            # Parse and normalize arguments for all accumulated tool calls.
-            # We do this before building the assistant message so the stored
-            # `arguments` string is always valid JSON (guards against 400s on
-            # the next API call caused by malformed raw strings from the LLM).
-            parsed_tool_calls: list[tuple[dict[str, Any], str, str, str]] = []  # (arguments, clean_args, call_id, tool_name)
+            # Parse arguments
+            parsed_tool_calls: list[tuple[dict[str, Any], str, str, str]] = []
             parse_error: str | None = None
             parse_error_index: int = 0
 
@@ -323,17 +339,12 @@ class Agent:
                         f"Failed to parse arguments for tool '{acc['name']}': {exc}. "
                         "Please retry the call with valid JSON arguments."
                     )
-                    logger.warning(
-                        "Agent '%s' bad tool arguments for '%s': %s", self.name, acc["name"], exc
-                    )
+                    logger.warning("Agent '%s' bad tool arguments for '%s': %s", self.name, acc["name"], exc)
                     parse_error_index = i
-                    # Fill remaining with empty so we still have the right count
                     for remaining_acc in list(tool_calls_acc.values())[i:]:
                         parsed_tool_calls.append(({}, "{}", remaining_acc["id"], remaining_acc["name"]))
                     break
 
-            # Build the assistant message using CLEAN (normalized) argument strings
-            # so the conversation history is always valid for the next API call.
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
                 "content": assistant_text or "",
@@ -349,19 +360,21 @@ class Agent:
             self.conversation.messages.append(assistant_msg)
 
             if parse_error is not None:
-                # Append error result for the failed tool call
                 failed_call_id = parsed_tool_calls[parse_error_index][2]
                 self.conversation.messages.append(
                     {"role": "tool", "tool_call_id": failed_call_id, "content": f"Error: {parse_error}"}
                 )
-                # Append placeholder results for all remaining tool calls
                 for _, _, remaining_call_id, _ in parsed_tool_calls[parse_error_index + 1:]:
                     self.conversation.messages.append({
                         "role": "tool",
                         "tool_call_id": remaining_call_id,
-                        "content": "Skipped due to earlier parse error in this batch."
+                        "content": "Skipped due to earlier parse error in this batch.",
                     })
-                continue  # retry the iteration loop rather than break — gives LLM a chance to recover
+                continue
+
+            # Rebuild openai_tools after each iteration — toolset may have changed
+            # due to skill activation/deactivation.
+            openai_tools = self._build_openai_tools()
 
             for arguments, clean_args, call_id, tool_name in parsed_tool_calls:
                 yield ToolCallStartEvent(
@@ -371,6 +384,8 @@ class Agent:
                     arguments_raw=clean_args,
                 )
 
+                is_error = False
+
                 if tool_name.startswith("delegate_to_agent_"):
                     target_name = tool_name.replace("delegate_to_agent_", "")
                     task = arguments.get("task", "")
@@ -378,7 +393,6 @@ class Agent:
                     async for event in self._delegate(target_name, task):
                         yield event
                     tool_result = delegation_result or f"Delegation to {target_name} completed."
-                    is_error = False
 
                 elif tool_name.startswith("ask_agent_"):
                     target_name = tool_name.replace("ask_agent_", "")
@@ -389,12 +403,21 @@ class Agent:
                             ask_result += event.result
                         yield event
                     tool_result = ask_result or f"Asked {target_name} for information."
-                    is_error = False
+
+                elif tool_name.startswith("skill_"):
+                    skill = next((s for s in self.skills if s.name == tool_name), None)
+                    if skill is None:
+                        tool_result = f"Error: Skill '{tool_name}' not found."
+                        is_error = True
+                    else:
+                        tool_result = self._activate_skill(skill)
+
+                elif tool_name == "deactivate_skill":
+                    tool_result = self._deactivate_skill()
 
                 else:
                     try:
                         tool_result = await self._execute_tool(tool_name, arguments)
-                        is_error = False
                     except Exception as exc:
                         tool_result = f"Error: {exc}"
                         is_error = True
@@ -414,10 +437,8 @@ class Agent:
         if not found_answer:
             logger.warning(
                 "Agent '%s' never produced a clean final answer after %d iterations",
-                self.name,
-                self.max_iterations,
+                self.name, self.max_iterations,
             )
-            # Surface last assistant text rather than returning empty string
             final_answer = assistant_text if assistant_text else "I was unable to complete this task."
 
         yield FinalAnswerEvent(agent_name=self.name, answer=final_answer)

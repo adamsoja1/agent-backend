@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass
-from typing import Any, Callable, get_type_hints, overload
+from dataclasses import dataclass, field
+from typing import Any, Callable, get_type_hints
 
 
 _PY_TO_JSON_TYPE: dict[type, str] = {
@@ -19,15 +19,20 @@ _PY_TO_JSON_TYPE: dict[type, str] = {
 class BaseTool:
     name: str
     description: str
-    func: Callable[..., Any]
+    func: Callable[..., Any] | None = None
 
     def execute(self, *args, **kwargs) -> Any:
+        if self.func is None:
+            raise NotImplementedError(f"'{self.name}' has no executable function.")
         return self.func(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.name}: {self.description}"
 
-    def to_openai_schema(self) -> dict[str, Any]:
+    def _build_parameters(self) -> dict[str, Any]:
+        if self.func is None:
+            return {"type": "object", "properties": {}, "required": []}
+
         sig = inspect.signature(self.func)
         try:
             hints = get_type_hints(self.func)
@@ -38,26 +43,41 @@ class BaseTool:
         required: list[str] = []
 
         for param_name, param in sig.parameters.items():
-            py_type = hints.get(param_name, None)
-            json_type = _PY_TO_JSON_TYPE.get(py_type, "string")
-            properties[param_name] = {"type": json_type}
-
+            py_type = hints.get(param_name)
+            properties[param_name] = {"type": _PY_TO_JSON_TYPE.get(py_type, "string")}
             if param.default is inspect.Parameter.empty:
                 required.append(param_name)
 
+        return {"type": "object", "properties": properties, "required": required}
+
+    def to_openai_schema(self) -> dict[str, Any]:
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
+                "parameters": self._build_parameters(),
             },
         }
 
+
+@dataclass
+class Skill(BaseTool):
+    tools: list[BaseTool] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.tools:
+            raise ValueError("A skill must have at least one tool.")
+        self.name = f"skill_{self.name}"
+
+    def get_tool(self, name: str) -> BaseTool:
+        for t in self.tools:
+            if t.name == name:
+                return t
+        raise KeyError(f"Tool '{name}' not found in skill '{self.name}'.")
+
+    def get_tools_schemas(self) -> list[dict[str, Any]]:
+        return [t.to_openai_schema() for t in self.tools]
 
 
 def tool(

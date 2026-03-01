@@ -1,18 +1,13 @@
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class Conversation:
     id: str
+    messages: list[dict[str, str]] = field(default_factory=list)
     system_prompt: str = ''
-    messages: list[dict[str, str]] = None
     summarized_history: str = "" #to be added later on
-    
-
-    def __post_init__(self):
-        if self.messages is None:
-            self.messages = [self._prepare_system_prompt()]
     
     def add_message(self, role: str, content: str) -> None:
         self.messages.append({"role": role, "content": content})

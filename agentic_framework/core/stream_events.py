@@ -43,6 +43,10 @@ class AskAgentEventResult(StreamEvent):
     question: str
     result: str
 
+@dataclass
+class SkillEvent(StreamEvent):
+    """The model decided to use a skill."""
+    skill_name: str
 
 @dataclass
 class FinalAnswerEvent(StreamEvent):
