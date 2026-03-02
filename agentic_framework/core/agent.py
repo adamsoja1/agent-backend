@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _default_client = AsyncOpenAI(
-    base_url=os.getenv("LLM_BASE_URL", "https://ollama.com/v1"),
-    api_key=os.getenv("OLLAMA_API_KEY", "ollama"),
+    base_url=os.getenv("LLM_PROVIDER", "https://ollama.com/v1"),
+    api_key=os.getenv("OPENAI_API_KEY", "EMPTY"),
 )
 
 _DEACTIVATE_TOOL = BaseTool(
