@@ -32,14 +32,6 @@ _default_client = AsyncOpenAI(
     api_key=os.getenv("OPENAI_API_KEY", "EMPTY"),
 )
 
-_DEACTIVATE_TOOL = BaseTool(
-    name="deactivate_skill",
-    description=(
-        "Deactivate the current skill and return to the base toolset. "
-        "Call this when you are done using the current skill's tools."
-    ),
-)
-
 
 @dataclass
 class Agent:
@@ -66,11 +58,10 @@ class Agent:
             self._skill_prompt = (
                 f"\n\nYou have the following skills available. "
                 f"Activate a skill when the task matches its domain — this will unlock its specific tools. "
-                f"You should first call skill_<skill_name> to activate a skill, then use its tools as needed. "
-                f"Call `deactivate_skill` when you are done with the skill's tools to return to the base toolset. "
-                f"You can switch directly between skills without calling `deactivate_skill` first.\n\n"
+                f"Call skill_<skill_name> to activate a skill, then use its tools as needed. "
+                f"Switching to another skill automatically deactivates the current one.\n\n"
                 f"Available skills:\n{skills_list}"
-                f"You can activate only one skill at a time, and activating a new skill will deactivate the previous one."
+                f"You can activate only one skill at a time."
             )
             for skill in self.skills:
                 self.tools[skill.name] = skill
@@ -81,17 +72,23 @@ class Agent:
         self._active_skill_prompt: str = ""
 
     def _activate_skill(self, skill: Skill) -> str:
-        self.tools = {}
+        prev_skill_name = self._active_skill.name if self._active_skill else None
+
+        # Start from base toolset so all skills remain visible
+        self.tools = dict(self._base_tools)
+        # Overlay the new skill's tools
         self.tools.update({t.name: t for t in skill.tools})
-        self.tools[_DEACTIVATE_TOOL.name] = _DEACTIVATE_TOOL
         self._active_skill = skill
 
         self._active_skill_prompt = (
             f"\n\n[Currently Active Skill: {skill.name}]\n"
-            f"Call `deactivate_skill` when you are done."
+            f"Activate a different skill at any time to switch — the previous one deactivates automatically."
         )
 
-        return f"Skill '{skill.name}' activated."
+        msg = f"Skill '{skill.name}' activated."
+        if prev_skill_name:
+            msg = f"Skill '{prev_skill_name}' deactivated. {msg}"
+        return msg
 
     def _deactivate_skill(self) -> str:
         if self._active_skill is None:
@@ -264,7 +261,7 @@ class Agent:
             yield ErrorEvent(agent_name=self.name, error="No OpenAI client configured.")
             return
 
-        self.conversation.add_message("user", user_message)
+        self.conversation.add_user_message(user_message)
 
         final_answer = ""
         found_answer = False
@@ -279,12 +276,15 @@ class Agent:
                 openai_tools = []
                 tool_choice = "none"
 
-            # Rebuild system prompt each iteration (skill state may have changed)
-            # and retrieve the full message history including the system prompt.
             self._rebuild_system_prompt()
             messages = self.conversation.get_messages()
 
-            stream_kwargs: dict[str, Any] = dict(model=self.model, messages=messages, stream=True)
+            stream_kwargs: dict[str, Any] = dict(
+                model=self.model,
+                messages=messages,
+                stream=True
+            )
+
             if openai_tools:
                 stream_kwargs["tools"] = openai_tools
                 stream_kwargs["tool_choice"] = tool_choice
@@ -308,33 +308,26 @@ class Agent:
 
                 delta = choice.delta
 
-                # ── Reasoning content (thinking tokens) ──────────────────────
-                # Present on deepseek-r1, qwq and similar models.
-                # We accumulate it separately so it never leaks into
-                # assistant_text or the conversation history.
                 raw_reasoning = getattr(delta, "reasoning_content", None)
                 if raw_reasoning:
                     reasoning_text += raw_reasoning
-                    logger.debug(
-                        "Agent '%s' reasoning token (iteration %d): %r",
-                        self.name, iteration, raw_reasoning,
-                    )
 
-                # ── Visible assistant content ─────────────────────────────────
                 text_chunk = self._extract_text_from_delta(delta)
                 if text_chunk:
                     assistant_text += text_chunk
                     yield TextDeltaEvent(agent_name=self.name, delta=text_chunk)
 
-                # ── Tool call fragments ───────────────────────────────────────
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
                         idx = tc.index
                         if idx not in tool_calls_acc:
                             tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+
                         acc = tool_calls_acc[idx]
+
                         if tc.id:
                             acc["id"] = tc.id
+
                         if tc.function:
                             if tc.function.name and not acc["name"]:
                                 acc["name"] = tc.function.name
@@ -343,41 +336,30 @@ class Agent:
 
                 if choice.finish_reason is not None:
                     finish_reason = choice.finish_reason
-                    # Do NOT break here — let the async-for exhaust the stream
-                    # naturally.  Some reasoning models send content *after* the
-                    # chunk that carries finish_reason, and breaking early would
-                    # drop those tokens.
 
-            logger.debug(
-                "Agent '%s' iteration %d finished. finish_reason=%r tool_calls=%d "
-                "assistant_text_len=%d reasoning_text_len=%d",
-                self.name, iteration, finish_reason,
-                len(tool_calls_acc), len(assistant_text), len(reasoning_text),
-            )
-
-            # ── No tool calls → model produced its final answer ───────────────
+            # ─────────────────────────────────────────
+            # FINAL ANSWER
+            # ─────────────────────────────────────────
             if not tool_calls_acc:
                 if not assistant_text.strip():
-                    # Model returned nothing visible (only reasoning, or truly
-                    # empty).  Log and retry rather than yielding a blank answer.
                     logger.warning(
-                        "Agent '%s' returned empty assistant_text on iteration %d "
-                        "(finish_reason=%r, reasoning_len=%d). Retrying.",
-                        self.name, iteration, finish_reason, len(reasoning_text),
+                        "Agent '%s' returned empty assistant_text on iteration %d",
+                        self.name, iteration,
                     )
-                    # Feed a gentle nudge so the model actually answers.
-                    self.conversation.add_message(
-                        "user",
-                        "Please provide your answer based on your reasoning above.",
+                    self.conversation.add_user_message(
+                        "Please provide your answer based on your reasoning above."
                     )
                     continue
 
-                self.conversation.add_message("assistant", assistant_text)
+                self.conversation.add_assistant_message(assistant_text)
+
                 final_answer = assistant_text
                 found_answer = True
                 break
 
-            # ── Parse tool-call arguments ─────────────────────────────────────
+            # ─────────────────────────────────────────
+            # PARSE TOOL CALLS
+            # ─────────────────────────────────────────
             parsed_tool_calls: list[tuple[dict[str, Any], str, str, str]] = []
             parse_error: str | None = None
             parse_error_index: int = 0
@@ -387,21 +369,14 @@ class Agent:
                     parsed_args, clean_args = self._parse_tool_arguments(acc["arguments"])
                     parsed_tool_calls.append((parsed_args, clean_args, acc["id"], acc["name"]))
                 except json.JSONDecodeError as exc:
-                    parse_error = (
-                        f"Failed to parse arguments for tool '{acc['name']}': {exc}. "
-                        "Please retry the call with valid JSON arguments."
-                    )
-                    logger.warning(
-                        "Agent '%s' bad tool arguments for '%s': %s",
-                        self.name, acc["name"], exc,
-                    )
+                    parse_error = f"Failed to parse arguments for tool '{acc['name']}': {exc}"
                     parse_error_index = i
+
                     for remaining_acc in list(tool_calls_acc.values())[i:]:
                         parsed_tool_calls.append(({}, "{}", remaining_acc["id"], remaining_acc["name"]))
                     break
 
-            # Store the assistant turn (with tool call requests) in conversation.
-            self.conversation.add_assistant_with_tool_calls(
+            self.conversation.add_assistant_tool_calls(
                 content=assistant_text or "",
                 tool_calls=[
                     {
@@ -415,21 +390,22 @@ class Agent:
 
             if parse_error is not None:
                 failed_call_id = parsed_tool_calls[parse_error_index][2]
+
                 self.conversation.add_tool_result(
                     tool_call_id=failed_call_id,
                     content=f"Error: {parse_error}",
                 )
+
                 for _, _, remaining_call_id, _ in parsed_tool_calls[parse_error_index + 1:]:
                     self.conversation.add_tool_result(
                         tool_call_id=remaining_call_id,
-                        content="Skipped due to earlier parse error in this batch.",
+                        content="Skipped due to earlier parse error.",
                     )
                 continue
 
-            # Rebuild openai_tools after each iteration — toolset may have
-            # changed due to skill activation/deactivation.
-            openai_tools = self._build_openai_tools()
-
+            # ─────────────────────────────────────────
+            # EXECUTE TOOLS
+            # ─────────────────────────────────────────
             for arguments, clean_args, call_id, tool_name in parsed_tool_calls:
                 yield ToolCallStartEvent(
                     agent_name=self.name,
@@ -442,32 +418,28 @@ class Agent:
 
                 if tool_name.startswith("delegate_to_agent_"):
                     target_name = tool_name.replace("delegate_to_agent_", "")
-                    task = arguments.get("task", "")
-                    delegation_result = ""
-                    async for event in self._delegate(target_name, task):
+                    async for event in self._delegate(target_name, arguments.get("task", "")):
                         yield event
-                    tool_result = delegation_result or f"Delegation to {target_name} completed."
+                    tool_result = f"Delegation to {target_name} completed."
 
                 elif tool_name.startswith("ask_agent_"):
                     target_name = tool_name.replace("ask_agent_", "")
-                    question = arguments.get("question", "")
                     ask_result = ""
-                    async for event in self._ask_agent(target_name, question):
+
+                    async for event in self._ask_agent(target_name, arguments.get("question", "")):
                         if isinstance(event, AskAgentEventResult):
                             ask_result += event.result
                         yield event
-                    tool_result = ask_result or f"Asked {target_name} for information."
+
+                    tool_result = ask_result or f"Asked {target_name}."
 
                 elif tool_name.startswith("skill_"):
                     skill = next((s for s in self.skills if s.name == tool_name), None)
-                    if skill is None:
-                        tool_result = f"Error: Skill '{tool_name}' not found."
-                        is_error = True
-                    else:
+                    if skill:
                         tool_result = self._activate_skill(skill)
-
-                elif tool_name == "deactivate_skill":
-                    tool_result = self._deactivate_skill()
+                    else:
+                        tool_result = f"Error: Skill not found"
+                        is_error = True
 
                 else:
                     try:
@@ -484,18 +456,13 @@ class Agent:
                     is_error=is_error,
                 )
 
-                # Store the tool result in the conversation so it's part of history.
                 self.conversation.add_tool_result(
                     tool_call_id=call_id,
                     content=str(tool_result),
                 )
 
         if not found_answer:
-            logger.warning(
-                "Agent '%s' never produced a clean final answer after %d iterations",
-                self.name, self.max_iterations,
-            )
-            final_answer = assistant_text if assistant_text else "I was unable to complete this task."
+            final_answer = assistant_text or "I was unable to complete this task."
 
         yield FinalAnswerEvent(agent_name=self.name, answer=final_answer)
 
