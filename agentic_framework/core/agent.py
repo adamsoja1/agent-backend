@@ -48,6 +48,7 @@ class Agent:
     tool_auto_choice: bool = False
     crew: Crew | None = field(default=None, repr=False, compare=False)
     output_format: Any = None
+    reasoning_effort: str = "medium"  # "low", "medium", "high"
 
     def __post_init__(self):
         if isinstance(self.tools, list):
@@ -283,11 +284,13 @@ class Agent:
                 model=self.model,
                 messages=messages,
                 stream=True
+                
             )
 
             if openai_tools:
                 stream_kwargs["tools"] = openai_tools
                 stream_kwargs["tool_choice"] = tool_choice
+                stream_kwargs["reasoning_effort"] = self.reasoning_effort
 
             try:
                 response_stream = await self.client.chat.completions.create(**stream_kwargs)
