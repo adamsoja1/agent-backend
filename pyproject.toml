@@ -37,9 +37,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/discord-ai-app"
-Repository = "https://github.com/yourusername/discord-ai-app"
-Issues = "https://github.com/yourusername/discord-ai-app/issues"
+Homepage = "https://github.com/adamsoja1/agent-backend"
+Repository = "https://github.com/adamsoja1/agent-backend"
+Issues = "https://github.com/adamsoja1/agent-backend/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -1,8 +1,4 @@
-"""Agentic Framework - A modular framework for building AI agents.
-
-This package provides tools and components for building AI-powered agents
-with support for Discord integration, crew management, and memory systems.
-"""
+"""Agentic Framework - tools for building streaming LLM agents and crews."""
 
 from agentic_framework._version import __version__
 __author__ = "Adam Soja"

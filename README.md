@@ -1,454 +1,368 @@
 # Agentic Framework
 
-A modular framework for building AI agents with support for Discord integration, crew management, and memory systems.
+A small Python framework for building streaming LLM agents with tools, skills, and multi-agent crew delegation.
 
-## Features
+## What Is Included
 
-- **Agent System**: Create and manage autonomous AI agents
-- **Conversation Management**: Handle multi-turn conversations
-- **Crew Management**: Orchestrate multiple agents working together
-- **Memory System**: Persistent memory for agents
-- **Streaming Events**: Real-time event streaming
-- **LLM Client**: Unified interface for various LLM providers
-- **Tool System**: Extensible tool framework
+- **Agents**: async streaming agents backed by an OpenAI-compatible client.
+- **Tools**: Python callables exposed to the model as OpenAI tool schemas.
+- **Skills**: grouped toolsets that an agent can activate during a run.
+- **Conversations**: event-based message history converted to OpenAI-compatible messages.
+- **Crews**: orchestration for multiple agents with delegation or ask-only collaboration.
+- **Streaming events**: typed events for text deltas, tool calls, tool results, delegation, errors, and final answers.
 
 ## Installation
 
-### From GitHub (Recommended for now)
+Install from GitHub:
 
 ```bash
-# Install latest version
 pip install git+https://github.com/adamsoja1/agent-backend.git
-
-# Install specific version/tag
-pip install git+https://github.com/adamsoja1/agent-backend.git@v0.1.0
-
 ```
 
-### From PyPI (when published)
+Install a tagged version:
+
+```bash
+pip install git+https://github.com/adamsoja1/agent-backend.git@v0.1.0
+```
+
+Install for local development:
+
+```bash
+git clone https://github.com/adamsoja1/agent-backend.git
+cd agent-backend
+python -m pip install -e ".[dev]"
+```
+
+When the package is published to PyPI:
 
 ```bash
 pip install agentic-framework
 ```
 
-### Development Installation
+## Configuration
 
-```bash
-git clone git+https://github.com/adamsoja1/agent-backend.git
-cd discord-ai-app
-pip install -e ".[dev]"
+`Agent` uses an `AsyncOpenAI`-compatible client. You can pass a client explicitly, which is recommended:
+
+```python
+import os
+from openai import AsyncOpenAI
+
+client = AsyncOpenAI(
+    base_url=os.getenv("LLM_PROVIDER", "https://ollama.com/v1"),
+    api_key=os.getenv("OPENAI_API_KEY", "EMPTY"),
+)
 ```
+
+If you do not pass `client=...`, the framework creates a default `AsyncOpenAI` client using:
+
+- `LLM_PROVIDER`, defaulting to `https://ollama.com/v1`
+- `OPENAI_API_KEY`, defaulting to `EMPTY`
 
 ## Quick Start
 
 ```python
-from agentic_framework import Agent, Crew
-
-# Create an agent
-agent = Agent(name="assistant")
-
-# Create a crew of agents
-crew = Crew(agents=[agent])
-
-# Run the crew
-result = crew.run("Hello, how are you?")
-```
-
----
-
-## Detailed Usage Guide
-
-### Architecture Overview
-
-```
-┌────────────────────────────────────────────────���────────────┐
-│                         Crew                                │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │  Entrypoint Agent                                   │  │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐│  │
-│  │  │  Agent 1     │  │  Agent 2     │  │  Agent 3     ││  │
-│  │  │  (weather)   │  │  (helper)    │  │  (main)      ││  │
-│  │  │  • Tools     │  │  • Tools     │  │  • Router    ││  │
-│  │  │  • Delegate  │  │  • Delegate  │  │  • Route     ││  │
-│  │  └──────────────┘  └──────────────┘  └──────────────┘│  │
-│  └───────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────���────────────────────┘
-```
-
-The framework consists of four main components:
-- **Tools**: Python functions decorated with `@tool` that agents can call
-- **Agent**: An AI agent with specific capabilities, tools, and configuration
-- **Conversation**: Manages message history and context
-- **Crew**: Orchestrates multiple agents with delegation and shared knowledge
-
-### Step 1: Configure the LLM Client
-
-The framework uses `AsyncOpenAI` client for LLM communication. Configure it with your base URL and API key.
-
-```python
-import os
-from openai import AsyncOpenAI
-
-client = AsyncOpenAI(
-    base_url=os.getenv("LLM_BASE_URL", "https://ollama.com/v1"),
-    api_key=os.getenv("OLLAMA_API_KEY", ""),
-)
-```
-
-**Environment Variables:**
-- `LLM_BASE_URL`: URL of your LLM provider (e.g., Ollama, OpenAI, etc.)
-- `OLLAMA_API_KEY`: API key for authentication
-
-### Step 2: Create Tools
-
-Tools are Python functions decorated with `@tool`. They allow agents to perform actions or retrieve information.
-
-```python
-from agentic_framework.tools.base import tool
-
-@tool
-def get_weather(city: str):
-    """Gets weather for specific city name."""
-    return f"Weather in {city} is turbo rainy!"
-
-@tool
-def get_user_items(user: str):
-    """Lists items for a specific user name."""
-    return f"Items for {user}: laptop, phone, keys"
-```
-
-**Tool Best Practices:**
-- Use type hints for parameters
-- Write clear docstrings (used as tool description)
-- Keep tools focused on a single responsibility
-- Return strings or serializable data
-
-### Step 3: Create a Conversation
-
-A `Conversation` manages the message history and system prompt for agents.
-
-```python
-from agentic_framework import Conversation
-
-conversation = Conversation(
-    id='1',
-    system_prompt="You are friendly AITIS assistant."
-)
-```
-
-### Step 4: Create Agents
-
-Agents are the core building blocks. Each agent can have specific tools and capabilities.
-
-```python
-from agentic_framework import Agent
-
-# Router agent (no tools, routes to other agents)
-agent1 = Agent(
-    description='You are helpful assistant.',
-    name='AITIS',
-    model='kimi-k2.5',
-    client=client,
-    conversation=conversation,
-    tools=[]
-)
-
-# Weather specialist agent
-agent2 = Agent(
-    description='Agent to get weather from the API - weather agent',
-    name='weather_agent',
-    model='kimi-k2.5',
-    client=client,
-    conversation=conversation,
-    tools=[get_weather]
-)
-
-# User items specialist agent
-agent3 = Agent(
-    description='Agent to get items from the API',
-    name='user_helper_agent',
-    model='kimi-k2.5',
-    client=client,
-    conversation=conversation,
-    tools=[get_user_items]
-)
-```
-
-**Agent Parameters:**
-| Parameter | Description |
-|-----------|-------------|
-| `name` | Unique agent identifier |
-| `description` | Agent's purpose (visible to other agents for delegation) |
-| `model` | LLM model name (e.g., 'kimi-k2.5', 'gpt-4') |
-| `client` | AsyncOpenAI client instance |
-| `conversation` | Shared conversation object |
-| `tools` | List of available tools |
-| `max_iterations` | Max tool calls per invocation (default: 7) |
-| `can_delegate` | Allow agent to delegate to others (default: True) |
-| `tool_auto_choice` | Auto-select tools without reasoning (default: False) |
-
-### Step 5: Create a Crew
-
-A `Crew` orchestrates multiple agents, enabling delegation and collaboration.
-
-```python
-from agentic_framework import Crew
-
-crew = Crew(
-    agents=[agent1, agent2, agent3],
-    entrypoint_agent=agent1,
-    conversation=conversation
-)
-```
-
-**Crew Parameters:**
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `agents` | - | List of all agents (must include entrypoint) |
-| `entrypoint_agent` | - | First agent to receive user messages |
-| `delegate_to_agent` | `True` | Allow agents to delegate tasks |
-| `only_ask_for_info` | `False` | Ask only vs full delegation |
-| `shared_knowledge` | `True` | Share conversation history |
-| `transfer_limit` | 5 | Max delegation depth |
-
-**How Crew Delegation Works:**
-1. User sends message to `entrypoint_agent`
-2. Entrypoint agent analyzes the request
-3. If another agent has the right tool, entrypoint **delegates** to that agent
-4. Specialized agent processes the request and returns result
-5. All results are streamed back to the user
-
-```
-User → AITIS (entrypoint) → weather_agent (delegation) → Tool Execution → Result
-```
-
-### Step 6: Run the Crew
-
-Use `crew.invoke()` to stream responses asynchronously.
-
-```python
-from agentic_framework.core.stream_events import (
-    TextDeltaEvent,
-    ToolCallStartEvent,
-    ToolResultEvent,
-    FinalAnswerEvent,
-    ErrorEvent
-)
-
-# Example: Ask about weather
-async for event in crew.invoke("What is the weather in London?"):
-    if isinstance(event, TextDeltaEvent):
-        print(event.delta, end="")  # Stream text chunks
-    elif isinstance(event, ToolCallStartEvent):
-        print(f"\n[Tool called: {event.tool_name}]")
-    elif isinstance(event, ToolResultEvent):
-        print(f"[Tool result: {event.result}]")
-    elif isinstance(event, FinalAnswerEvent):
-        print(f"\n[Final answer from {event.agent_name}]")
-    elif isinstance(event, ErrorEvent):
-        print(f"[Error: {event.error}]")
-```
-
-**Streaming Events:**
-| Event | Description |
-|-------|-------------|
-| `TextDeltaEvent` | Streaming text chunk |
-| `ToolCallStartEvent` | Agent started calling a tool |
-| `ToolResultEvent` | Tool execution completed |
-| `DelegationEvent` | Agent delegating to another agent |
-| `AskAgentEventResult` | Agent asking another for information |
-| `FinalAnswerEvent` | Agent produced final answer |
-| `ErrorEvent` | Error occurred during processing |
-
----
-
-## Complete Example
-
-```python
-import os
 import asyncio
-from openai import AsyncOpenAI
-from agentic_framework import Agent, Conversation, Crew
-from agentic_framework.tools.base import tool
+from agentic_framework import Agent
 from agentic_framework.core.stream_events import TextDeltaEvent, FinalAnswerEvent
+from agentic_framework.tools.base import tool
 
-# 1. Configure LLM client
-client = AsyncOpenAI(
-    base_url=os.getenv("LLM_BASE_URL", "https://ollama.com/v1"),
-    api_key=os.getenv("OLLAMA_API_KEY", ""),
-)
-
-# 2. Define tools
-@tool
-def get_weather(city: str):
-    """Gets weather for specific city name."""
-    return f"Weather in {city} is turbo rainy!"
 
 @tool
-def get_user_items(user: str):
-    """Lists items for a specific user name."""
-    return f"Items for {user}: laptop, phone, keys"
+def get_weather(city: str) -> str:
+    """Get weather for a city."""
+    return f"Weather in {city}: rainy"
 
-# 3. Create shared conversation
-conversation = Conversation(
-    id='1',
-    system_prompt="You are friendly AITIS assistant."
+
+agent = Agent(
+    name="assistant",
+    model="gpt-4o-mini",
+    system_prompt="You are a concise assistant.",
+    tools=[get_weather],
 )
 
-# 4. Create agents
-agent1 = Agent(
-    description='Main router assistant',
-    name='AITIS',
-    model='kimi-k2.5',
-    client=client,
-    conversation=conversation,
-    tools=[]
-)
 
-agent2 = Agent(
-    description='Weather information specialist',
-    name='weather_agent',
-    model='kimi-k2.5',
-    client=client,
-    conversation=conversation,
-    tools=[get_weather]
-)
-
-agent3 = Agent(
-    description='User items specialist',
-    name='user_helper_agent',
-    model='kimi-k2.5',
-    client=client,
-    conversation=conversation,
-    tools=[get_user_items]
-)
-
-# 5. Create crew
-crew = Crew(
-    agents=[agent1, agent2, agent3],
-    entrypoint_agent=agent1,
-    conversation=conversation
-)
-
-# 6. Run
-async def main():
-    async for event in crew.invoke("What's the weather in London?"):
+async def main() -> None:
+    async for event in agent.stream("What is the weather in London?"):
         if isinstance(event, TextDeltaEvent):
             print(event.delta, end="")
         elif isinstance(event, FinalAnswerEvent):
-            print(f"\n\n[Done! Agent: {event.agent_name}]")
+            print(f"\nFinal answer: {event.answer}")
+
 
 asyncio.run(main())
 ```
 
----
-
-## Advanced Features
-
-### Memory System
-
-Agents can persist information across conversations:
+For a non-streaming convenience wrapper:
 
 ```python
-from agentic_framework import Memory
-
-memory = Memory()
-memory.store("user_preference", "likes_python")
-value = memory.retrieve("user_preference")
+answer = await agent.invoke("What is the weather in London?")
 ```
 
-### Custom System Prompts
+## Tools
 
-Tailor agent behavior with detailed prompts:
+Decorate a Python function with `@tool` to expose it to an agent. The function name becomes the tool name, the docstring becomes the description, and type hints are used to build a JSON schema.
 
 ```python
+from agentic_framework.tools.base import tool
+
+
+@tool
+def get_user_items(user: str) -> str:
+    """List items owned by a user."""
+    return f"Items for {user}: laptop, phone, keys"
+```
+
+You can also override the generated name and description:
+
+```python
+@tool(name="lookup_items", description="Look up a user's items.")
+def get_user_items(user: str) -> str:
+    return f"Items for {user}: laptop, phone, keys"
+```
+
+Supported primitive schema mappings are `str`, `int`, `float`, `bool`, `list`, and `dict`. Unknown or complex annotations fall back to `"string"`.
+
+## Skills
+
+Skills group tools behind an activation tool. A skill named `"research"` is exposed as `skill_research`; when activated, its tools are added to the agent's available tools until another skill is activated or the skill is deactivated internally.
+
+```python
+from agentic_framework.tools.base import BaseTool, Skill
+
+
+search_tool = BaseTool(
+    name="search_docs",
+    description="Search internal docs.",
+    func=lambda query: f"Results for {query}",
+)
+
+research_skill = Skill(
+    name="research",
+    description="Use when the task needs document research.",
+    tools=[search_tool],
+)
+
 agent = Agent(
-    name="code_reviewer",
-    description="Expert code reviewer",
-    system_prompt="""You are an expert code reviewer. Focus on:
-1. Code correctness
-2. Best practices
-3. Performance optimizations
-4. Security issues
-""",
-    model="kimi-k2.5",
-    client=client,
-    tools=[]
+    name="assistant",
+    model="gpt-4o-mini",
+    skills=[research_skill],
 )
 ```
 
-### Single Agent Usage (without Crew)
+## Conversations
 
-Agents can work independently:
+`Conversation` stores events, not just plain messages. `get_messages()` converts the visible events into OpenAI-compatible message dictionaries.
 
 ```python
-agent = Agent(
-    name="simple_agent",
-    model="kimi-k2.5",
-    client=client,
-    conversation=conversation,
-    tools=[get_weather]
-)
+from agentic_framework import Conversation
 
-# Stream response
-async for event in agent.stream("What's the weather?"):
-    print(event)
+conversation = Conversation(system_prompt="You are helpful.")
+conversation.add_user_message("Hello")
+conversation.add_assistant_message("Hi!")
 
-# Access conversation history
-print(agent.conversation.get_messages())
+print(conversation.get_messages())
 ```
 
----
+Internal events such as reasoning and text deltas are intentionally skipped when building messages for the LLM.
 
-## Best Practices
+## Crews
 
-1. **Clear Agent Descriptions**: Help the entrypoint agent decide where to delegate
-2. **Tool Granularity**: One tool per specific task
-3. **Specialized Agents**: Each agent should have a focused responsibility
-4. **Shared Conversation**: Enable `shared_knowledge` for context awareness
-5. **Transfer Limits**: Set `transfer_limit` to prevent infinite loops
-6. **Error Handling**: Always check for `ErrorEvent` in streaming
-7. **Type Hints**: Use type hints in tools for better schema generation
+Use `Crew` to connect multiple agents. The `entrypoint_agent` receives the user's input first. During initialization, agents are registered as tools on their peers:
 
----
+- `delegate_to_agent_<name>` in normal delegation mode
+- `ask_agent_<name>` when `only_ask_for_info=True`
+
+```python
+import asyncio
+from agentic_framework import Agent, Crew
+from agentic_framework.core.stream_events import ErrorEvent, FinalAnswerEvent, TextDeltaEvent
+from agentic_framework.tools.base import tool
+
+
+@tool
+def get_weather(city: str) -> str:
+    """Get weather for a city."""
+    return f"Weather in {city}: rainy"
+
+
+router = Agent(
+    name="router",
+    model="gpt-4o-mini",
+    description="Routes work to specialists.",
+)
+
+weather_agent = Agent(
+    name="weather_agent",
+    model="gpt-4o-mini",
+    description="Answers weather questions.",
+    tools=[get_weather],
+)
+
+crew = Crew(
+    agents=[router, weather_agent],
+    entrypoint_agent=router,
+    transfer_limit=5,
+)
+
+
+async def main() -> None:
+    async for event in crew.invoke("What is the weather in Warsaw?"):
+        if isinstance(event, TextDeltaEvent):
+            print(event.delta, end="")
+        elif isinstance(event, FinalAnswerEvent):
+            print(f"\nFinal answer from {event.agent_name}: {event.answer}")
+        elif isinstance(event, ErrorEvent):
+            print(f"\nError: {event.error}")
+
+
+asyncio.run(main())
+```
+
+For a non-streaming crew response:
+
+```python
+answer = await crew.get_response("What is the weather in Warsaw?")
+```
+
+## Streaming Events
+
+Agents and crews yield dataclass events from `agentic_framework.core.stream_events`:
+
+| Event | Description |
+| --- | --- |
+| `TextDeltaEvent` | A chunk of assistant text. |
+| `ToolCallStartEvent` | A tool call is about to execute. |
+| `ToolResultEvent` | A tool call completed or failed. |
+| `DelegationEvent` | An agent delegated work to another agent. |
+| `AskAgentEventResult` | An agent asked another agent for information. |
+| `FinalAnswerEvent` | The agent produced its final answer. |
+| `ErrorEvent` | A non-recoverable error occurred. |
 
 ## API Reference
 
 ### Agent
+
 ```python
 Agent(
-    name: str,                           # Required: unique name
-    model: str,                         # Required: LLM model
-    description: str = "",              # Purpose for delegation
-    system_prompt: str = "",            # Instructions for behavior
-    tools: list[BaseTool] = [],         # Available tools
-    conversation: Conversation = None,  # Message history
-    max_iterations: int = 7,             # Max tool calls
-    can_delegate: bool = True,         # Allow delegation
-    client: Any = None,                 # AsyncOpenAI client
+    name: str,
+    model: str,
+    description: str = "",
+    system_prompt: str = "",
+    can_delegate: bool = True,
+    tools: list[BaseTool] = [],
+    skills: list[Skill] = [],
+    conversation: Conversation = Conversation(),
+    max_iterations: int = 7,
+    client: Any = default AsyncOpenAI client,
+    tool_auto_choice: bool = False,
+    crew: Crew | None = None,
+    output_format: Any = None,
+    reasoning_effort: str = "medium",
 )
 ```
+
+Useful methods:
+
+- `stream(user_message: str)`: async generator of streaming events.
+- `invoke(user_message: str) -> str`: returns the final answer string.
+- `add_tool(tool: BaseTool | Agent)`: adds a tool, or registers an agent as a delegation/ask tool when part of a crew.
+- `remove_tool(name: str) -> bool`: removes a tool by name.
+- `list_tools() -> list[str]`: lists available tool names.
+- `as_dict() -> dict`: serializes basic agent state.
 
 ### Crew
+
 ```python
 Crew(
-    agents: list[Agent],                 # Required: all agents
-    entrypoint_agent: Agent,            # Required: first agent
-    delegate_to_agent: bool = True,     # Enable delegation
-    only_ask_for_info: bool = False,    # Ask-only mode
-    shared_knowledge: bool = True,      # Share conversation
-    conversation: Conversation = None, # Shared context
-    transfer_limit: int = 5,           # Max delegation depth
+    agents: list[Agent],
+    entrypoint_agent: Agent,
+    delegate_to_agent: bool = True,
+    only_ask_for_info: bool = False,
+    shared_knowledge: bool = True,
+    shared_identity: bool = False,
+    conversation: Conversation = Conversation(),
+    system_prompt: str = "...",
+    transfer_limit: int = 5,
 )
 ```
 
----
+Useful methods:
+
+- `invoke(input_message: str)`: async generator of crew events.
+- `get_response(input_message: str) -> str`: returns the final answer string.
+- `get_agent_by_name(name: str) -> Agent | None`: finds an agent in the crew.
+
+### BaseTool
+
+```python
+BaseTool(
+    name: str,
+    description: str,
+    func: Callable[..., Any] | None = None,
+)
+```
+
+Useful methods:
+
+- `execute(*args, **kwargs) -> Any`: calls the wrapped function.
+- `to_openai_schema() -> dict`: returns an OpenAI-compatible function schema.
+
+### Skill
+
+```python
+Skill(
+    name: str,
+    description: str,
+    func: Callable[..., Any] | None = None,
+    tools: list[BaseTool] = [],
+)
+```
+
+`Skill` requires at least one tool and prefixes its name with `skill_` during initialization.
+
+## Packaging And Releases
+
+The package version lives in:
+
+```python
+agentic_framework/_version.py
+```
+
+To release a new version:
+
+1. Update `__version__`.
+2. Create a tag that matches the version, for example `v0.1.1`.
+3. Publish a GitHub release for that tag.
+
+The CI workflow runs tests and builds wheel/source distributions. The publish workflow checks that the release tag matches the package version before uploading to PyPI.
+
+## Development
+
+Run tests:
+
+```bash
+python -m pytest -q
+```
+
+Build the package:
+
+```bash
+python -m pip install build twine
+python -m build
+python -m twine check dist/*
+```
 
 ## Requirements
 
 - Python 3.10+
-- See `pyproject.toml` for full dependency list
+- Runtime dependencies listed in `pyproject.toml`
+
+## Current Limitations
+
+- There is no implemented memory API yet; `agentic_framework.core.memory` is currently empty.
+- `agentic_framework.core.swarm` is currently empty.
+- `tool_auto_choice`, `output_format`, and `shared_identity` are stored on the dataclasses but do not currently change runtime behavior.
 
 ## License
 
-MIT License
+MIT
