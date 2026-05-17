@@ -17,7 +17,7 @@ def setup_logging(log_level: int = logging.INFO, log_dir: str | None = None) -> 
     # Create default log directory in workspace root
     if log_dir is None:
         # Get the workspace root (parent of agentic_framework package)
-        workspace_root = Path(__file__).parent.parent.parent
+        workspace_root = Path(__file__).parent.parent
         log_dir = workspace_root / "logs"
     else:
         log_dir = Path(log_dir)

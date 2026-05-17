@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentic-framework"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A modular agentic framework for building AI agents"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
     {name = "Your Name", email = "your@email.com"}
@@ -16,7 +16,6 @@ keywords = ["ai", "agents", "llm", "framework"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -48,3 +47,6 @@ include = ["agentic_framework*"]
 
 [tool.setuptools.package-data]
 agentic_framework = ["py.typed"]
+
+[tool.setuptools.dynamic]
+version = {attr = "agentic_framework._version.__version__"}

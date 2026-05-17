@@ -1,5 +1,4 @@
 include README.md
 include LICENSE
-include py.typed
 recursive-include agentic_framework *.py
 recursive-include agentic_framework py.typed

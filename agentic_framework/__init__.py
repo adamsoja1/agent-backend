@@ -4,7 +4,7 @@ This package provides tools and components for building AI-powered agents
 with support for Discord integration, crew management, and memory systems.
 """
 
-__version__ = "0.1.0"
+from agentic_framework._version import __version__
 __author__ = "Adam Soja"
 __email__ = "your@email.com"
 
@@ -47,4 +47,3 @@ __all__ = [
     "setup_logging",
     "get_logger",
 ]
-
